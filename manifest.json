@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "抖音标记视频自动跳过（30x16/购物）",
+  "version": "1.1.1",
+  "description": "在抖音推荐流里，当前视频一旦出现 rect width=30 height=16 rx=2，或 div.gwmKU4Jo 里的「购物」，立刻滑动到下一个视频。",
+  "permissions": ["storage"],
+  "host_permissions": ["*://*.douyin.com/*"],
+  "background": { "service_worker": "background.js" },
+  "commands": {
+    "recover-screen": {
+      "suggested_key": { "default": "Ctrl+Shift+Z" },
+      "description": "恢复画面：把推荐流往回滚一条"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.douyin.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "抖音标记视频自动跳过（30x16/购物）",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

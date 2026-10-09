@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>标记跳过 · 离线用例</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #eee; font: 13px system-ui, sans-serif; }
+    .slidelist { position: relative; overflow-y: auto; }
+    .card { position: relative; box-sizing: border-box; border-bottom: 2px dashed #999; padding: 8px; }
+    .badge-hint { color: #999; }
+    #result { position: fixed; right: 8px; top: 8px; padding: 8px; background: #111; color: #0f0;
+              font: 12px/1.5 monospace; max-width: 45vw; white-space: pre-wrap; z-index: 99; }
+  </style>
+</head>
+<body>
+  <div id="result">running…</div>
+  <div class="slidelist" id="list"></div>
+
+  <script>
+    // ── 用例 ──────────────────────────────────────────────────────────
+    //   active/other/offscreen : rect 标记的位置（当前这条 / 别的卡片 / 视口外）
+    //   div-active/div-other   : div.gwmKU4Jo 含「购物」的位置
+    //   div-nocart             : div.gwmKU4Jo 但文字不是「购物」
+    //   misalign               : 点了箭头之后只滚 40px 不到位的状态，考验自动对齐
+    const CASE = new URLSearchParams(location.search).get('case') || 'active';
+    const list = document.getElementById('list');
+    const H = Math.max(300, Math.round(window.innerHeight * 0.75));
+    list.style.height = H + 'px';
+
+    const plays = [];            // 记录 video.play() 被调用的次数与卡片
+    let untrustedScrolls = 0;    // 记录滚动容器上收到的「合成」scroll 事件次数
+
+    function makeVideoStub(cardId) {
+      const v = document.createElement('video');
+      // 播放器「停在 00:00」的状态：paused=true、currentTime=0
+      Object.defineProperty(v, 'paused', { configurable: true, get: () => true });
+      Object.defineProperty(v, 'currentTime', { configurable: true, get: () => 0, set: () => {} });
+      Object.defineProperty(v, 'play', {
+        configurable: true,
+        value: () => { plays.push({ card: cardId, at: Math.round(performance.now()) }); render(); return Promise.resolve(); }
+      });
+      v.style.cssText = 'position:absolute;left:0;bottom:0;width:2px;height:2px;';
+      return v;
+    }
+
+    function makeCard(vid, badge) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.dataset.e2e = 'feed-item';
+      card.style.height = H + 'px';
+      card.innerHTML = '<div class="badge-hint">card ' + vid + '</div>';
+      if (badge === 'rect') {
+        // 与真页面同构：svg 里的圆角底 rect
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 30 16');
+        svg.setAttribute('width', '30');
+        svg.setAttribute('height', '16');
+        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        rect.setAttribute('width', '30');
+        rect.setAttribute('height', '16');
+        rect.setAttribute('rx', '2');
+        rect.setAttribute('fill', '#fe2c55');
+        svg.appendChild(rect);
+        svg.style.cssText = 'position:absolute;left:40px;top:12px;display:block';
+        card.appendChild(svg);
+      } else if (badge === 'div' || badge === 'div-nocart') {
+        const d = document.createElement('div');
+        d.className = 'gwmKU4Jo';
+        d.textContent = badge === 'div' ? '购物' : '视频同款';   // nocart：同 class 但不含“购物”
+        d.style.cssText = 'position:absolute;left:40px;top:60px;color:#fe2c55';
+        card.appendChild(d);
+      }
+      card.appendChild(makeVideoStub(vid));
+      return card;
+    }
+
+    const ids = ['1001', '1002', '1003', '1004'];
+    const CASES = {
+      active:        { card: 0, kind: 'rect' },
+      other:         { card: 1, kind: 'rect' },
+      offscreen:     { card: 2, kind: 'rect' },
+      'div-active':  { card: 0, kind: 'div' },
+      'div-other':   { card: 1, kind: 'div' },
+      'div-nocart':  { card: 0, kind: 'div-nocart' },
+      misalign:      { card: 0, kind: 'div' }
+    };
+    const plan = CASES[CASE] || CASES.active;
+    const cards = ids.map((id, i) => makeCard(id, i === plan.card ? plan.kind : null));
+    cards.forEach((c) => list.appendChild(c));
+
+    // 页面自报的活跃卡片 + 它的视频 id
+    let active = 0;
+    function markActive(i) {
+      active = i;
+      cards.forEach((c) => {
+        const old = c.querySelector('[data-e2e="feed-active-video"]');
+        if (old) old.remove();
+      });
+      const box = document.createElement('div');
+      box.setAttribute('data-e2e', 'feed-active-video');
+      box.setAttribute('data-e2e-vid', ids[i]);
+      box.style.cssText = 'position:absolute;left:0;right:0;bottom:0;height:4px;background:#2bd9c4';
+      cards[i].appendChild(box);
+    }
+    markActive(0);
+
+    // 滚动容器上的（合成）scroll 事件计数
+    list.addEventListener('scroll', (e) => { if (!e.isTrusted) untrustedScrolls++; });
+
+    // 页面自己的「下一条」箭头
+    const arrow = document.createElement('button');
+    arrow.setAttribute('data-e2e', 'video-switch-next-arrow');
+    arrow.textContent = 'next';
+    arrow.style.cssText = 'position:fixed;left:8px;top:8px;z-index:50';
+    arrow.addEventListener('click', () => {
+      if (active < cards.length - 1) {
+        const target = cards[active + 1].offsetTop;
+        // misalign 用例：故意少滚 40px，模拟「停在两条之间」的卡住状态
+        list.scrollTop = CASE === 'misalign' ? target - 40 : target;
+        markActive(active + 1);
+        record('advance');
+      }
+    });
+    document.body.appendChild(arrow);
+
+    // ── 观察结果 ──────────────────────────────────────────────────
+    const t0 = performance.now();
+    const events = [];
+    window.__RESULT = { case: CASE, events, activeVid: ids[0], msToFirstSkip: null, toast: null, plays: [], untrustedScrolls: 0, cardTops: [] };
+
+    function record(what) {
+      const ms = Math.round(performance.now() - t0);
+      events.push(what + '@' + ms + 'ms');
+      if (what === 'advance' && window.__RESULT.msToFirstSkip === null) window.__RESULT.msToFirstSkip = ms;
+      render();
+    }
+
+    function render() {
+      window.__RESULT.activeVid = ids[active];
+      const toastEl = document.getElementById('dy-rect-skip-toast');
+      window.__RESULT.toast = toastEl ? toastEl.textContent : null;
+      window.__RESULT.scrollTop = list.scrollTop;
+      window.__RESULT.plays = plays.slice();
+      window.__RESULT.untrustedScrolls = untrustedScrolls;
+      window.__RESULT.cardTops = cards.map((c) => c.offsetTop);
+      window.__RESULT.aligned = list.scrollTop === cards[active].offsetTop;
+      document.getElementById('result').textContent = JSON.stringify({
+        case: CASE, activeVid: ids[active], msToFirstSkip: window.__RESULT.msToFirstSkip,
+        toast: window.__RESULT.toast, scrollTop: list.scrollTop,
+        aligned: window.__RESULT.aligned, plays: plays.length, untrustedScrolls
+      }, null, 1);
+    }
+
+    setInterval(render, 200);
+    render();
+  </script>
+
+  <!-- 假 chrome：让内容脚本能在离线页里跑起来 -->
+  <script>
+    window.chrome = {
+      storage: {
+        local: {
+          get(def, cb) { setTimeout(() => cb(def), 0); },
+          set() {}
+        }
+      },
+      runtime: { onMessage: { addListener() {} } }
+    };
+  </script>
+  <script src="../content.js"></script>
+</body>
+</html>

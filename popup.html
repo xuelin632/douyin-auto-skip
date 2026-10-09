@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>抖音标记视频自动跳过（30x16/购物）</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      width: 280px;
+      margin: 0;
+      padding: 14px;
+      font: 13px/1.6 system-ui, "Microsoft YaHei", sans-serif;
+    }
+    h1 { margin: 0 0 10px; font-size: 14px; }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(128, 128, 128, .22);
+    }
+    .row:last-of-type { border-bottom: 0; }
+    .label { opacity: .78; }
+    .value { font-weight: 600; }
+    .big { font-size: 18px; }
+    .muted { opacity: .6; font-size: 12px; }
+    button {
+      width: 100%;
+      margin-top: 8px;
+      padding: 8px 10px;
+      border: 1px solid rgba(128, 128, 128, .4);
+      border-radius: 8px;
+      background: transparent;
+      font: inherit;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    button:hover { background: rgba(128, 128, 128, .14); }
+    /* 恢复画面图标：从小游戏导航那格的雪碧图切出来的手柄图（明暗两套自适应） */
+    button .ico {
+      width: 24px;
+      height: 24px;
+      flex: 0 0 auto;
+      display: block;
+      background: url("icons/restore_onlight.png") center / contain no-repeat;
+    }
+    @media (prefers-color-scheme: dark) {
+      button .ico { background-image: url("icons/restore_ondark.png"); }
+    }
+    #reason {
+      margin-top: 8px;
+      padding: 8px;
+      border-radius: 8px;
+      background: rgba(128, 128, 128, .14);
+      min-height: 34px;
+      font-size: 12px;
+    }
+    .switch { display: inline-flex; align-items: center; gap: 8px; }
+    input[type="checkbox"] { width: 16px; height: 16px; }
+  </style>
+</head>
+<body>
+  <h1>标记视频自动跳过</h1>
+
+  <div class="row">
+    <span class="label">启用</span>
+    <span class="switch"><input type="checkbox" id="enabled" /></span>
+  </div>
+  <div class="row">
+    <span class="label">今日已跳过</span>
+    <span class="value big" id="today">0</span>
+  </div>
+  <div class="row">
+    <span class="label">累计</span>
+    <span class="value" id="total">0</span>
+  </div>
+  <div class="row">
+    <span class="label">当前视频</span>
+    <span class="value muted" id="vid">-</span>
+  </div>
+  <div class="row">
+    <span class="label">当前视频上的标记</span>
+    <span class="value" id="marker">-</span>
+  </div>
+
+  <div id="reason">上次动作：-</div>
+  <button id="scan">立即检查一次</button>
+  <button id="recover" title="画面卡住或黑屏时，把推荐流滚回来一点"><span class="ico" aria-hidden="true"></span><span>恢复画面</span></button>
+  <button id="reset">清空计数</button>
+
+  <script src="popup.js"></script>
+</body>
+</html>
