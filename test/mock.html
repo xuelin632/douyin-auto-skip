@@ -63,10 +63,21 @@
         svg.appendChild(rect);
         svg.style.cssText = 'position:absolute;left:40px;top:12px;display:block';
         card.appendChild(svg);
-      } else if (badge === 'div' || badge === 'div-nocart') {
+      } else if (badge === 'div' || badge === 'div-nocart' || badge === 'div-split') {
         const d = document.createElement('div');
         d.className = 'gwmKU4Jo';
-        d.textContent = badge === 'div' ? '购物' : '视频同款';   // nocart：同 class 但不含“购物”
+        if (badge === 'div-split') {
+          // 与真页面同构：文字被拆成「购物」+ <span> | </span> + 「视频同款」
+          // v1.3.0 把三个节点拼成「购物 视频同款」（7 字），两条规则全落空 → 漏判
+          d.appendChild(document.createTextNode('购物'));
+          const sep = document.createElement('span');
+          sep.className = 'v6ErjN1a';
+          sep.textContent = ' | ';
+          d.appendChild(sep);
+          d.appendChild(document.createTextNode('视频同款'));
+        } else {
+          d.textContent = badge === 'div' ? '购物' : '视频同款';   // nocart：同 class 但不含“购物”
+        }
         d.style.cssText = 'position:absolute;left:40px;top:60px;color:#fe2c55';
         card.appendChild(d);
       }
@@ -81,6 +92,7 @@
       offscreen:     { card: 2, kind: 'rect' },
       'div-active':  { card: 0, kind: 'div' },
       'div-other':   { card: 1, kind: 'div' },
+      'div-split':   { card: 0, kind: 'div-split' },
       'div-nocart':  { card: 0, kind: 'div-nocart' },
       misalign:      { card: 0, kind: 'div' }
     };
@@ -157,6 +169,8 @@
 
   <!-- 假 chrome：让内容脚本能在离线页里跑起来 -->
   <script>
+    // ?debug=1 时让内容脚本把内部函数挂到 window.__DY，方便在控制台排错
+    if (new URLSearchParams(location.search).get('debug') === '1') window.__DY_DEBUG = true;
     window.chrome = {
       storage: {
         local: {

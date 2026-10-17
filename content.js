@@ -4,7 +4,8 @@
  * 目标（老师的要求）：在 https://www.douyin.com/?recommend=1 里，
  *   当前视频一旦出现下面任一标记，**立刻**滑动到下一个视频：
  *     ① <rect width="30" height="16" rx="2">
- *     ② <div class="gwmKU4Jo"> 且里面含「购物」
+ *     ② 文字「购物」（抖音写成 <div>购物<span> | </span> 视频同款</div>，
+ *        文字被拆成好几个文本节点，所以按**逐个文本节点**判断，不拼起来看）
  *
  * ── 判定规则（老师贴的 DOM，照用，不加自己的猜测）────────────────
  *   三个条件同时成立才算「命中当前视频」：
@@ -48,16 +49,21 @@
   /**
    * 标记清单。sel 是选择器；text 是可选的文本条件（命中必须同时满足）。
    *
-   * 关于「购物」标签：抖音的 class 是 CSS-in-JS 生成的（wgmKU4Jo → nreJijFE → …），
-   * 每次发版都可能变，所以**不写死任何 class**。改成两条语义规则：
-   *   1. span/div 的**文本恰好是「购物」**（前后不夹别的字），并且可见、属于当前卡片；
-   *   2. 文本**包含「购物」但很短**（≤6 字）的元素，作为兜底。
-   * 只要抖音还把它渲染成一段文字「购物」，改 class 都不影响。
+   * 关于「购物」标签：抖音的 class 是 CSS-in-JS 生成的（gwmKU4Jo → nreJijFE → …），
+   * 每次发版都可能变，所以**不写死任何 class**。改成三条语义规则：
+   *   1. 某个**直接文本节点**恰好是「购物」（前后不夹别的字），并且可见、属于当前卡片；
+   *   2. 某个直接文本节点**包含「购物」但很短**（≤6 字），作为兜底；
+   *   3. 某个直接文本节点**以「购物」开头且不长**（≤10 字），兜住「购物 | 视频同款」
+   *      被抖音合成一个文本节点的情况。
+   * 关键：判断的是**每一个文本节点**，不是把元素里所有文本拼起来——
+   * v1.3.0 就是拼接判断，「购物」后面跟着「| 视频同款」的文本节点一拼变成
+   * 「购物 视频同款」（7 字），两条规则全落空，页面明明有标签却查不到。
    */
   const MARKERS = [
     { kind: 'rect-30x16-rx2', sel: 'rect[width="30"][height="16"][rx="2"]' },
     { kind: 'text-购物-精确', sel: 'span, div', exactText: '购物' },
-    { kind: 'text-购物-短句', sel: 'span, div', text: CART_RE, maxLen: 6 }
+    { kind: 'text-购物-短句', sel: 'span, div', text: CART_RE, maxLen: 6 },
+    { kind: 'text-购物-前缀', sel: 'span, div', prefixText: '购物', prefixMaxLen: 10 }
   ];
 
   /**
@@ -152,27 +158,41 @@
   /**
    * 文本类标记的命中判定：只看这个元素**自己**的文字，不含子元素拼起来的长文本。
    * 这样「购物」标签能中，而整张卡片的简介里出现「购物」不会误判。
+   * 逐个直接文本节点判断，不拼接：标签常写成「购物<span> | </span> 视频同款」，
+   * 拼起来是「购物 视频同款」，既不是「恰好购物」也超过短句上限，就会漏判。
    */
-  function ownText(el) {
-    let s = '';
+  function ownTexts(el) {
+    const out = [];
     try {
       for (const node of el.childNodes) {
-        if (node.nodeType === 3) s += node.nodeValue || '';
+        if (node.nodeType !== 3) continue;
+        const s = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+        if (s) out.push(s);
       }
     } catch (e) { /* ignore */ }
-    return s.replace(/\s+/g, ' ').trim();
+    return out;
+  }
+
+  /** 诊断/日志用：把所有直接文本节点拼成一行看个大概（不用于判定） */
+  function ownText(el) {
+    return ownTexts(el).join(' ');
   }
 
   function matchTextMarker(el, marker) {
-    const own = ownText(el);
-    if (!own) return false;
-    if (marker.exactText) return own === marker.exactText;
-    if (marker.text) {
-      if (!marker.text.test(own)) return false;
-      if (marker.maxLen && own.length > marker.maxLen) return false;
-      return true;
+    for (const own of ownTexts(el)) {
+      if (marker.exactText && own === marker.exactText) return true;
+      if (marker.text && marker.text.test(own)) {
+        if (!marker.maxLen || own.length <= marker.maxLen) return true;
+      }
+      if (marker.prefixText && own.indexOf(marker.prefixText) === 0) {
+        if (!marker.prefixMaxLen || own.length <= marker.prefixMaxLen) return true;
+      }
     }
     return false;
+  }
+
+  function isTextMarker(marker) {
+    return !!(marker.text || marker.exactText || marker.prefixText);
   }
 
   function findMarker() {
@@ -180,7 +200,7 @@
       let nodes = [];
       try { nodes = document.querySelectorAll(marker.sel); } catch (e) { nodes = []; }
       for (const el of nodes) {
-        if ((marker.text || marker.exactText) && !matchTextMarker(el, marker)) continue;
+        if (isTextMarker(marker) && !matchTextMarker(el, marker)) continue;
         if (!visible(el)) continue;
         if (!belongsToActive(el)) continue;
         return { kind: marker.kind, el };
@@ -255,7 +275,7 @@
       try { nodes = document.querySelectorAll(marker.sel); } catch (e) { nodes = []; }
       for (const el of nodes) {
         // 文本类标记只统计真正命中的元素，不然「span」会把整页都算进来
-        if ((marker.text || marker.exactText) && !matchTextMarker(el, marker)) continue;
+        if (isTextMarker(marker) && !matchTextMarker(el, marker)) continue;
         const r = el.getBoundingClientRect();
         let card = null;
         try { card = el.closest('[data-e2e="feed-item"]'); } catch (e) { card = null; }
@@ -687,7 +707,11 @@
         settleWatch();
         tick(false);
         paintAuthorChip();
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        // 以前这里是空 catch：匹配逻辑一旦抛异常（比如函数写错递归），
+        // 整整一版都会静默失效，页面看上去「正常但就是不跳」。至少留条日志。
+        log('检测循环出错：' + e);
+      }
     }, TICK_MS);
 
     try {
@@ -703,6 +727,13 @@
     if (observer) { try { observer.disconnect(); } catch (e) { /* ignore */ } observer = null; }
     unpaintAuthorChip();
   }
+
+  // 调试入口：离线用例（test/mock.html?debug=1）里把内部函数挂到 window 上排错用
+  try {
+    if (window.__DY_DEBUG) {
+      window.__DY = { MARKERS, ownTexts, matchTextMarker, findMarker, visible, activeCard, currentVid, tick, state };
+    }
+  } catch (e) { /* ignore */ }
 
   // ───────────────────────── 页面内的"屏蔽这个作者"浮标 ─────────────────────────
   //
