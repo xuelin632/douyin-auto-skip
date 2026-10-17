@@ -47,13 +47,36 @@
   const CART_RE = /购物/;
   /**
    * 标记清单。sel 是选择器；text 是可选的文本条件（命中必须同时满足）。
-   * 注意 div.gwmKU4Jo 是页面 CSS-in-JS 生成的名字，抖音改版后可能变——变了就按
-   * 老师新贴的那段 DOM 换掉这里的选择器即可，别去模糊匹配 class 碎片。
+   *
+   * 关于「购物」标签：抖音的 class 是 CSS-in-JS 生成的（wgmKU4Jo → nreJijFE → …），
+   * 每次发版都可能变，所以**不写死任何 class**。改成两条语义规则：
+   *   1. span/div 的**文本恰好是「购物」**（前后不夹别的字），并且可见、属于当前卡片；
+   *   2. 文本**包含「购物」但很短**（≤6 字）的元素，作为兜底。
+   * 只要抖音还把它渲染成一段文字「购物」，改 class 都不影响。
    */
   const MARKERS = [
     { kind: 'rect-30x16-rx2', sel: 'rect[width="30"][height="16"][rx="2"]' },
-    { kind: 'div-gwmKU4Jo-购物', sel: 'div.gwmKU4Jo', text: CART_RE }
+    { kind: 'text-购物-精确', sel: 'span, div', exactText: '购物' },
+    { kind: 'text-购物-短句', sel: 'span, div', text: CART_RE, maxLen: 6 }
   ];
+
+  /**
+   * 作者名选择器：卡片里以 @ 开头的那个 span。
+   * 抖音的 class 是 CSS-in-JS 生成的（现在叫 WLnPrnPW），会变——所以这里不写死
+   * class，而是用「span 文本以 @ 开头」这个语义去扫，改名不会失效。
+   */
+  const AUTHOR_MAX_LEN = 40;
+
+  /** 把元素里的作者名规范化：去掉开头的 @、去掉后面 " · 时间" 之类的尾巴 */
+  function normalizeAuthor(raw) {
+    let s = String(raw || '').trim();
+    if (!s) return '';
+    if (s.charAt(0) === '@') s = s.slice(1);
+    // 有些节点文本是 "@名字 · 5天前"，只留名字
+    const cut = s.search(/\s*[·・]\s*/);
+    if (cut > 0) s = s.slice(0, cut);
+    return s.trim();
+  }
 
   const TICK_MS = 250;             // 检测节拍
   const OBSERVE_THROTTLE_MS = 120; // DOM 变动后的最快重检间隔
@@ -80,7 +103,8 @@
     date: dayKey(),
     lastReason: '',
     lastAdvanceEnd: 0,
-    seen: new Set()   // 已成功跳过的视频 id
+    seen: new Set(),        // 已成功跳过的视频 id
+    blockedAuthors: []      // 作者黑名单（不含 @ 的规范化名字）
   };
 
   function dayKey() {
@@ -125,18 +149,101 @@
     return card === active;
   }
 
+  /**
+   * 文本类标记的命中判定：只看这个元素**自己**的文字，不含子元素拼起来的长文本。
+   * 这样「购物」标签能中，而整张卡片的简介里出现「购物」不会误判。
+   */
+  function ownText(el) {
+    let s = '';
+    try {
+      for (const node of el.childNodes) {
+        if (node.nodeType === 3) s += node.nodeValue || '';
+      }
+    } catch (e) { /* ignore */ }
+    return s.replace(/\s+/g, ' ').trim();
+  }
+
+  function matchTextMarker(el, marker) {
+    const own = ownText(el);
+    if (!own) return false;
+    if (marker.exactText) return own === marker.exactText;
+    if (marker.text) {
+      if (!marker.text.test(own)) return false;
+      if (marker.maxLen && own.length > marker.maxLen) return false;
+      return true;
+    }
+    return false;
+  }
+
   function findMarker() {
     for (const marker of MARKERS) {
       let nodes = [];
       try { nodes = document.querySelectorAll(marker.sel); } catch (e) { nodes = []; }
       for (const el of nodes) {
-        if (marker.text && !marker.text.test(el.textContent || '')) continue;
+        if ((marker.text || marker.exactText) && !matchTextMarker(el, marker)) continue;
         if (!visible(el)) continue;
         if (!belongsToActive(el)) continue;
         return { kind: marker.kind, el };
       }
     }
+    // 作者黑名单：当前这条视频的作者名命中了就跳过
+    const author = currentAuthor();
+    if (author && isBlockedAuthor(author)) {
+      return { kind: '作者：@' + author, el: null };
+    }
     return null;
+  }
+
+  /** 这一条正在播的视频的作者名（规范化后，不含 @） */
+  function currentAuthor() {
+    const active = activeCard();
+    const scopes = active ? [active] : [];
+    if (!scopes.length) {
+      // 认不出活跃卡片时，退化为“整个文档里可见的那个 @ 名”
+      scopes.push(document.body);
+    }
+    for (const scope of scopes) {
+      if (!scope) continue;
+      let nodes = [];
+      try { nodes = scope.querySelectorAll('span'); } catch (e) { nodes = []; }
+      for (const el of nodes) {
+        const txt = (el.textContent || '').trim();
+        if (!txt || txt.charAt(0) !== '@') continue;
+        if (txt.length > AUTHOR_MAX_LEN) continue;
+        if (!visible(el)) continue;
+        const name = normalizeAuthor(txt);
+        if (name) return name;
+      }
+    }
+    return '';
+  }
+
+  /** 作者名是否在黑名单里（大小写不敏感 + 去空格全等比较，免得误伤同名片段） */
+  function isBlockedAuthor(name) {
+    if (!name || !state.blockedAuthors || state.blockedAuthors.length === 0) return false;
+    const key = name.replace(/\s+/g, '').toLowerCase();
+    for (const b of state.blockedAuthors) {
+      if (String(b).replace(/\s+/g, '').toLowerCase() === key) return true;
+    }
+    return false;
+  }
+
+  function addBlockedAuthor(name) {
+    const clean = normalizeAuthor(name);
+    if (!clean) return false;
+    if (isBlockedAuthor(clean)) return false;
+    state.blockedAuthors.push(clean);
+    if (state.blockedAuthors.length > 500) state.blockedAuthors = state.blockedAuthors.slice(-500);
+    save();
+    return true;
+  }
+
+  function removeBlockedAuthor(name) {
+    const key = normalizeAuthor(name).replace(/\s+/g, '').toLowerCase();
+    const before = state.blockedAuthors.length;
+    state.blockedAuthors = state.blockedAuthors.filter((b) => String(b).replace(/\s+/g, '').toLowerCase() !== key);
+    if (state.blockedAuthors.length !== before) { save(); return true; }
+    return false;
   }
 
   /** 诊断用：页面上所有标记的位置与归属，给弹窗看 */
@@ -147,12 +254,14 @@
       let nodes = [];
       try { nodes = document.querySelectorAll(marker.sel); } catch (e) { nodes = []; }
       for (const el of nodes) {
+        // 文本类标记只统计真正命中的元素，不然「span」会把整页都算进来
+        if ((marker.text || marker.exactText) && !matchTextMarker(el, marker)) continue;
         const r = el.getBoundingClientRect();
         let card = null;
         try { card = el.closest('[data-e2e="feed-item"]'); } catch (e) { card = null; }
         out.push({
           kind: marker.kind,
-          text: (el.textContent || '').slice(0, 12),
+          text: ownText(el).slice(0, 12),
           visible: visible(el),
           active: active ? card === active : null,
           w: Math.round(r.width),
@@ -402,7 +511,8 @@
         total: state.total,
         today: state.today,
         date: state.date,
-        lastReason: state.lastReason
+        lastReason: state.lastReason,
+        blockedAuthors: state.blockedAuthors
       });
     } catch (e) { /* ignore */ }
   }
@@ -576,6 +686,7 @@
       try {
         settleWatch();
         tick(false);
+        paintAuthorChip();
       } catch (e) { /* ignore */ }
     }, TICK_MS);
 
@@ -590,6 +701,67 @@
   function stop() {
     if (timer) { clearInterval(timer); timer = null; }
     if (observer) { try { observer.disconnect(); } catch (e) { /* ignore */ } observer = null; }
+    unpaintAuthorChip();
+  }
+
+  // ───────────────────────── 页面内的"屏蔽这个作者"浮标 ─────────────────────────
+  //
+  // 老师不想每次都开弹窗手打名字，所以在当前视频旁边挂一枚小按钮：
+  //   点它 = 把当前这条的作者加入黑名单；已经屏蔽过的显示成"已屏蔽"，再点取消。
+  // 用完不干扰画面：极小、半透明、只在有作者名时出现。
+
+  let chip = null;
+
+  function chipId() { return 'dy-rect-skip-author-chip'; }
+
+  function unpaintAuthorChip() {
+    try {
+      const el = document.getElementById(chipId());
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    } catch (e) { /* ignore */ }
+    chip = null;
+  }
+
+  function paintAuthorChip() {
+    if (!state.enabled) { unpaintAuthorChip(); return; }
+    const author = currentAuthor();
+    if (!author) { unpaintAuthorChip(); return; }
+    const blocked = isBlockedAuthor(author);
+    const label = (blocked ? '🚫 已屏蔽 ' : '⛔ 屏蔽 ') + '@' + author;
+
+    try {
+      let el = document.getElementById(chipId());
+      if (!el) {
+        el = document.createElement('div');
+        el.id = chipId();
+        el.style.cssText =
+          'position:fixed;left:16px;top:50%;transform:translateY(-50%);z-index:2147483646;' +
+          'padding:5px 10px;border-radius:14px;font:12px/1.4 system-ui,"Microsoft YaHei",sans-serif;' +
+          'background:rgba(17,18,22,.62);color:#fff;cursor:pointer;user-select:none;' +
+          'opacity:.28;transition:opacity .18s,background .18s;white-space:nowrap;max-width:46vw;' +
+          'overflow:hidden;text-overflow:ellipsis';
+        el.addEventListener('mouseenter', () => { el.style.opacity = '1'; });
+        el.addEventListener('mouseleave', () => { el.style.opacity = '.28'; });
+        el.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          ev.preventDefault();
+          const now = currentAuthor();
+          if (!now) return;
+          if (isBlockedAuthor(now)) {
+            removeBlockedAuthor(now);
+            toast('已取消屏蔽：@' + now);
+          } else {
+            addBlockedAuthor(now);
+            toast('已屏蔽作者：@' + now + '（以后刷到就跳过）');
+          }
+          paintAuthorChip();
+        });
+        document.documentElement.appendChild(el);
+      }
+      if (el.textContent !== label) el.textContent = label;
+      el.style.background = blocked ? 'rgba(196,48,43,.72)' : 'rgba(17,18,22,.62)';
+      chip = el;
+    } catch (e) { /* ignore */ }
   }
 
   // ───────────────────────── 与弹窗通信 ─────────────────────────
@@ -607,6 +779,8 @@
           lastReason: state.lastReason,
           marker: hit ? hit.kind : '',
           vid: currentVid(),
+          author: currentAuthor(),
+          blockedAuthors: state.blockedAuthors.slice(),
           paused: Date.now() < state.pausedUntil
         });
         return true;
@@ -648,6 +822,28 @@
         reply({ ok: true });
         return true;
       }
+      if (msg.type === 'blockAuthor') {
+        const name = msg.name ? normalizeAuthor(msg.name) : currentAuthor();
+        const added = addBlockedAuthor(name);
+        if (added) toast('已屏蔽作者：@' + normalizeAuthor(name));
+        reply({ ok: true, added, name: normalizeAuthor(name), blockedAuthors: state.blockedAuthors.slice() });
+        return true;
+      }
+      if (msg.type === 'unblockAuthor') {
+        const removed = removeBlockedAuthor(msg.name || '');
+        reply({ ok: true, removed, blockedAuthors: state.blockedAuthors.slice() });
+        return true;
+      }
+      if (msg.type === 'clearAuthors') {
+        state.blockedAuthors = [];
+        save();
+        reply({ ok: true, blockedAuthors: [] });
+        return true;
+      }
+      if (msg.type === 'whoIs') {
+        reply({ ok: true, author: currentAuthor(), vid: currentVid() });
+        return true;
+      }
       return false;
     });
   } catch (e) {
@@ -657,12 +853,13 @@
   // ───────────────────────── 启动 ─────────────────────────
 
   try {
-    chrome.storage.local.get({ enabled: true, total: 0, today: 0, date: dayKey(), lastReason: '' }, (data) => {
+    chrome.storage.local.get({ enabled: true, total: 0, today: 0, date: dayKey(), lastReason: '', blockedAuthors: [] }, (data) => {
       state.enabled = data.enabled !== false;
       state.total = Number(data.total) || 0;
       state.today = Number(data.today) || 0;
       state.date = data.date || dayKey();
       state.lastReason = data.lastReason || '';
+      state.blockedAuthors = Array.isArray(data.blockedAuthors) ? data.blockedAuthors.slice() : [];
       if (state.date !== dayKey()) { state.date = dayKey(); state.today = 0; }
       start();
     });
